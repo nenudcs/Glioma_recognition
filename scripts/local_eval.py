@@ -13,6 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the competition pipeline locally")
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--pipeline_factory", type=Path, required=True)
     parser.add_argument("--evaluation-id", default="local-evaluation")
     args = parser.parse_args()
 
@@ -20,6 +21,7 @@ def main() -> None:
     settings = Settings(
         workspace=output_root.parent,
         answer_root=output_root,
+        pipeline_factory=args.pipeline_factory,
         log_root=output_root.parent / "logs",
         callback_url=None,
     )
