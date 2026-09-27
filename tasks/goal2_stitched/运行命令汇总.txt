@@ -1,0 +1,324 @@
+================================================================================
+任务二运行命令汇总（赛道四 · Goal2：拼接影像 + 重复影像）
+================================================================================
+适用代码（管线仓库内的插件包，无需改管线其它文件）：
+    tasks/goal2_stitched/     拼接检测（规则式，产出 IsStitchedProb）
+    tasks/goal2_duplicate/    重复检测（近似重复检索，产出 duplicate_pairs.jsonl）
+接线入口：tasks/real_pipeline.py（Goal1 + Goal2 + 其余 Dummy）
+
+服务器路径示例（按你的实际路径替换）：
+    仓库根            /2026aicompetition/workspace/dcs/Glioma_recognition
+    训练数据根        /2026aicompetition/datasets/training
+    测试集（平台给）  /data/testset
+    checkpoint 根     /2026aicompetition/workspace/checkpoint
+    标定/离线产物     /2026aicompetition/workspace/Glioma_task12_runs
+    比赛输出          /2026aicompetition/workspace/answer/<evaluation_id>/
+    运行日志          /2026aicompetition/workspace/logs/
+
+三条铁律：
+  1) 所有 `python -m tasks.*` 命令都在【仓库根目录】执行；
+  2) `tasks/real_pipeline.py` 是插件接线表，被所有真实插件共用 —— 更新代码时
+     Goal2 的内容必须“最后覆盖”（顺序 goal1 → goal2），否则会静默绑到 Dummy
+     （现象：服务能起，但 IsStitchedProb 恒为 0、重复对只有占位行）；
+  3) 标定结果写到 checkpoint 规范路径，服务启动时自动读取；
+     环境变量是【临时覆盖】，两者同时存在时以环境变量为准。
+
+首次上手顺序：第 1 节 → 第 2 节 → 第 3 节 → 第 4 节 → 第 5 节 → 第 6 节
+
+“不起服务”的完整流程（与任务一「权重迁移 → 测试 → 离线打分」三步对应）：
+    第 1 节 环境 → 第 2 节 接线校验 → 第 3/4 节 标定 → 第 5 节 离线自检
+    需要一键跑完时：
+        bash tasks/goal2_stitched/verify.sh  --data-root <训练集> --checkpoint-root <ckpt> \
+             --out-dir <产物> --workers 8 --skip-service
+        bash tasks/goal2_duplicate/verify.sh --data-root <训练集> --checkpoint-root <ckpt> \
+             --out-dir <产物> --workers 8 --skip-service
+    （第 6 节的服务启动与 mock 只在要上线/演示时再跑）
+
+--------------------------------------------------------------------------------
+1. 准备：环境变量与依赖（每个新开的 shell 都要重做 1.1）
+--------------------------------------------------------------------------------
+
+1.1 设定变量（把这一整段粘进 shell）
+
+export COMPETITION_WORKSPACE=/2026aicompetition/workspace
+export REPO=/2026aicompetition/workspace/dcs/Glioma_recognition
+export DATA_ROOT=/2026aicompetition/datasets/training
+export RUN_DIR=$COMPETITION_WORKSPACE/Glioma_task12_runs
+export CHECKPOINT_ROOT=$COMPETITION_WORKSPACE/checkpoint
+export COMPETITION_PIPELINE_FACTORY=tasks.real_pipeline:build_pipeline
+cd "$REPO"                      # 之后所有命令都在仓库根执行
+
+1.2 检查变量（路径打错是最高频的报错原因）
+
+echo "[$REPO] [$DATA_ROOT] [$RUN_DIR] [$CHECKPOINT_ROOT]"
+ls -d "$REPO" "$DATA_ROOT"        # 这两个必须存在
+
+1.3 依赖（管线 + 服务侧；容器里的系统 Python 需要 --break-system-packages）
+
+python -m pip install --break-system-packages -r requirements.txt
+python -c "import numpy, nibabel, openpyxl, fastapi, uvicorn; print('deps ok')"
+python -c "import tasks.goal2_stitched.task, tasks.goal2_duplicate.task; print('goal2 modules ok')"
+
+--------------------------------------------------------------------------------
+2. 代码更新与版本校验（Goal2 必须最后覆盖接线表）
+--------------------------------------------------------------------------------
+
+2.1 四条校验（每次更新代码后都要跑）
+
+cd "$REPO"
+
+# a) 接线表版本指纹：期望 30e1aafc0714eb821bff52ef3c40415b247d842756df4df0e6a61e48b07dab99
+sha256sum tasks/real_pipeline.py
+
+# b) 绑定对象：只应看到 Goal2StitchedTask / Goal2DuplicateRecorder，不能有 DummyStitched/DummyDuplicate
+grep -nE "Goal2StitchedTask|Goal2DuplicateRecorder|DummyStitchedTask|DummyDuplicateTask" tasks/real_pipeline.py
+
+# c) 实际装配出来的任务链
+python -c "from tasks.real_pipeline import build_pipeline; p=build_pipeline(); print([type(b.task).__name__ for b in p.study_tasks], type(p.duplicate_task).__name__)"
+# 期望：['Goal1AuthenticityTask', 'Goal2StitchedTask', 'GatedStudyTask', 'GatedStudyTask', 'GatedStudyTask'] Goal2DuplicateRecorder
+
+# d) 契约测试（18 项，期望全过）
+find tasks tests -type d -name __pycache__ -prune -exec rm -rf {} +
+python -m unittest tests.contracts.test_goal2_contract -v
+
+2.2 只更新接线表时的做法
+
+  - 直接编辑 tasks/real_pipeline.py（保存后重跑 2.1 的四条）；
+  - 覆盖前先备份：cp -a tasks/real_pipeline.py /tmp/real_pipeline.bak.py
+  - 覆盖关系与症状说明见：tasks/goal2_stitched/APPLY_NOTES.md
+
+--------------------------------------------------------------------------------
+3. 拼接标定（正类 = annotation/Composition，负类 = 正常影像）
+--------------------------------------------------------------------------------
+
+3.1 目录体检（几秒，确认找得到正负类）
+
+python -m tasks.goal2_stitched.dataset --data-root "$DATA_ROOT"
+# 输出里 positives>0、negatives>0 才算正常；找不到时用 --annotation-root 指定
+
+3.2 标定阈值（结果自动写到 $CHECKPOINT_ROOT/goal2_stitched/calibration.json）
+
+python -m tasks.goal2_stitched.evaluate \
+  --data-root "$DATA_ROOT" \
+  --out-dir   "$RUN_DIR" \
+  --checkpoint-root "$CHECKPOINT_ROOT" \
+  --target-fpr 0.05 --workers 8
+
+# 想几分钟先看个口径：  加 --max-volumes 500（只抽样负类）
+# 效果不好换口径再标：  --metric local --stat p99 --band 0.2
+# 只打印不落盘：        加 --no-write-calibration
+
+产物：
+  $RUN_DIR/stitched_calibration.json            （阈值 + 召回/误报 + AP/ROC-AUC/Recall@10%FPR）
+  $CHECKPOINT_ROOT/goal2_stitched/calibration.json   ← 服务启动时读取的那份
+
+--------------------------------------------------------------------------------
+4. 重复标定（正类 = annotation/duplicate 金标准，图像对级 AUC-PR）
+--------------------------------------------------------------------------------
+
+4.1 金标准体检（确认能找到 gold 文件与配对）
+
+python -m tasks.goal2_duplicate.dataset --data-root "$DATA_ROOT"
+# 输出 gold_pairs / unique_studies；为 0 时用 --annotation-root 指定标注根目录
+
+4.2 标定相似度中心（结果自动写到 $CHECKPOINT_ROOT/goal2_duplicate/calibration.json）
+
+python -m tasks.goal2_duplicate.evaluate \
+  --data-root "$DATA_ROOT" \
+  --out-dir   "$RUN_DIR" \
+  --checkpoint-root "$CHECKPOINT_ROOT" \
+  --target-fpr 0.10 --workers 8
+
+# 大测试集想限时：加 --max-volumes 500
+# 想换描述子几何再标：--slices 3 --coarse-grid 12 --fine-grid 64 --shift 1
+
+产物：
+  $RUN_DIR/duplicate_evaluation.json            （金标准召回 + 图像对级 AP/ROC-AUC/Recall@10%FPR/Precision@15%Recall）
+  $CHECKPOINT_ROOT/goal2_duplicate/calibration.json  ← 服务启动时读取的那份
+
+--------------------------------------------------------------------------------
+5. 离线自检（不启动服务）
+--------------------------------------------------------------------------------
+
+5.1 在没有标注的真实测试集上抽查
+
+# 拼接：逐序列分数与 IsStitchedProb（看正常影像会不会被判成拼接）
+python -m tasks.goal2_stitched.evaluate --dataset /data/testset \
+  --out-dir "$RUN_DIR/goal2_offline" --workers 8
+# → $RUN_DIR/goal2_offline/stitched_scores.jsonl
+
+# 重复：跑一遍全库检索，输出与提交同格式的候选对
+python -m tasks.goal2_duplicate.evaluate --dataset /data/testset \
+  --out-dir "$RUN_DIR/goal2_offline" --workers 8
+# → $RUN_DIR/goal2_offline/duplicate_pairs_offline.jsonl
+
+5.2 手上没有测试集时，从训练集切一个小样本（测试集布局）
+
+python -m tasks.goal2_stitched.dataset --data-root "$DATA_ROOT" \
+  --make-subset 8 --target-dir /tmp/goal2_subset
+# 切出来的目录可直接当 --dataset 用，也可喂给第 6.2 节的 mock
+
+5.3 契约测试（与 2.1-d 相同，更新代码后必跑）
+
+python -m unittest tests.contracts.test_goal2_contract -v
+
+--------------------------------------------------------------------------------
+6. 起服务与验证
+--------------------------------------------------------------------------------
+
+6.1 起服务
+
+cd "$REPO"
+export COMPETITION_CALLBACK_URL='<平台页面给的完整回调地址>'
+export GOAL2_CHECKPOINT_ROOT="$CHECKPOINT_ROOT"     # 标定文件所在根（默认即此，可省）
+export GOAL2_GATED_FIELDS=goal3,goal4,goal5         # 想让下游照跑就写：export GOAL2_GATED_FIELDS=
+
+nohup ./start.sh > "$COMPETITION_WORKSPACE/logs/serve.log" 2>&1 &
+sleep 20
+curl http://127.0.0.1:8000/health                     # 期望 {"status":"active"}
+
+# 确认服务读到了标定文件（能看到 goal2_stitched / goal2_duplicate 的配置行）
+grep -n "goal2" "$COMPETITION_WORKSPACE/logs/serve.log" | head
+
+6.2 一次完整调用自检
+
+curl -X POST http://127.0.0.1:8000/call -H 'Content-Type: application/json' \
+  -d '{"request_id":"t-1","team_id":"team","track_code":"track4",
+       "input":{"evaluation_id":"e-1","dataset_path":"/data/testset"}}'
+
+ls -l "$COMPETITION_WORKSPACE/answer/e-1/"                    # 应有 duplicate_pairs.jsonl + 每例目录
+head -3 "$COMPETITION_WORKSPACE/answer/e-1/duplicate_pairs.jsonl"
+python -c "import json,glob;f=sorted(glob.glob('$COMPETITION_WORKSPACE/answer/e-1/*/prediction.json'))[0];d=json.load(open(f));print(f, d.get('IsStitchedProb'), d.get('IsNotHumanBodyProb'))"
+tail -5 "$COMPETITION_WORKSPACE/logs/inference.jsonl"
+
+6.3 一键脚本（五阶段：环境 → 配置 → 契约测试 → 标定/打分 → 服务级 mock）
+
+# 拼接
+bash tasks/goal2_stitched/verify.sh --data-root "$DATA_ROOT" \
+  --checkpoint-root "$CHECKPOINT_ROOT" --out-dir "$RUN_DIR" --workers 8 --target-fpr 0.05
+
+# 重复
+bash tasks/goal2_duplicate/verify.sh --data-root "$DATA_ROOT" \
+  --checkpoint-root "$CHECKPOINT_ROOT" --out-dir "$RUN_DIR" --workers 8 --target-fpr 0.10
+
+# 常用变体
+#   只跑前四阶段（不起服务，推荐）：  --skip-service
+#   在指定测试集上打分/检索：        --dataset /data/testset
+#   没有测试集时切小样本再打分：      --make-subset 8
+#   标定限时（只抽样负类/限制扫描）：  --max-volumes 500
+#   正类目录改名时指定前缀：          --positive-kind compositing   （仅 goal2_stitched）
+
+--------------------------------------------------------------------------------
+7. 环境变量速查
+--------------------------------------------------------------------------------
+
+路径类
+  GOAL2_CHECKPOINT_ROOT        标定文件根目录（默认 $COMPETITION_WORKSPACE/checkpoint）
+  CHECKPOINT_ROOT              goal1/goal2 共用的兜底根目录名
+  GOAL2_DATA_ROOT              verify.sh 里的默认训练集根（可选）
+  GOAL2_RUN_DIR                verify.sh 里的默认产物目录（可选）
+
+任务二 · 拼接（前缀 GOAL2_STITCHED_）
+  GOAL2_STITCHED               1/0 是否启用拼接检测（默认 1）
+  GOAL2_STITCHED_THRESHOLD     判定阈值（标定前是占位 0.16，分数=阈值时概率 0.5）
+  GOAL2_STITCHED_METRIC        curvature（默认）| adjacent | local
+  GOAL2_STITCHED_STAT          max（默认）| p99 | mean
+  GOAL2_STITCHED_BAND          层方向两端丢弃比例，默认 0.1
+  GOAL2_STITCHED_SCALE         概率映射斜率，默认 8.0
+  GOAL2_STITCHED_GATE          命中后是否对下游上闸，默认 1
+
+任务二 · 重复（前缀 GOAL2_DUPLICATE_）
+  GOAL2_DUPLICATE              1/0 是否启用重复检测（默认 1）
+  GOAL2_DUPLICATE_MODE         near（默认，近似重复）| exact（只认逐像素一致）
+  GOAL2_DUPLICATE_SCAN         1 = 先扫全库建索引（默认）；0 = 只与已见过的检查增量比对
+  GOAL2_DUPLICATE_SCAN_MAX_VOLUMES  全库扫描条数上限（0 = 不限，可用于限时）
+  GOAL2_DUPLICATE_SCAN_WORKERS 全库扫描并行读盘线程数，默认 4
+  GOAL2_DUPLICATE_SIM_CENTER   相似度→概率中心，默认 0.90（必须用第 4 节标定）
+  GOAL2_DUPLICATE_SIM_SCALE    概率映射斜率，默认 0.02
+  GOAL2_DUPLICATE_MIN_SIM      精排相似度下限，默认 0.50（低于不上报）
+  GOAL2_DUPLICATE_COARSE_FLOOR 粗检索余弦下限，默认 0.80（低于不精排）
+  GOAL2_DUPLICATE_TOP_K        每个检查最多上报的候选对数，默认 20
+  GOAL2_DUPLICATE_GATE_PROB    概率达到该值才判定为重复，默认 0.5
+  GOAL2_DUPLICATE_GATE         命中后是否对下游上闸，默认 1
+  GOAL2_DUPLICATE_REPORT_MIN_PROB 低于该概率不写进提交文件，默认 0.0
+  GOAL2_DUPLICATE_MAX_PAIRS    每例最多提交的候选对数，默认 200（赛方稀疏性约束）
+  GOAL2_DUPLICATE_SLICES / _COARSE_GRID / _FINE_GRID / _SHIFT   描述子几何，默认 3/12/64/1
+
+闸门
+  GOAL2_GATED_FIELDS           被闸门拦下的任务，默认 goal3,goal4,goal5
+                               置空（export GOAL2_GATED_FIELDS=）= 完全不上闸
+
+服务侧（管线通用）
+  COMPETITION_PIPELINE_FACTORY = tasks.real_pipeline:build_pipeline
+  COMPETITION_WORKSPACE        工作区根（answer/、logs/、checkpoint/ 都在其下）
+  COMPETITION_CALLBACK_URL     平台回调地址
+
+--------------------------------------------------------------------------------
+8. 关键产物位置
+--------------------------------------------------------------------------------
+
+  $RUN_DIR/stitched_calibration.json                 拼接标定报告（阈值/召回/误报/AP）
+  $RUN_DIR/duplicate_evaluation.json                 重复标定报告（金标准召回/图像对级指标）
+  $RUN_DIR/goal2_offline/stitched_scores.jsonl       离线逐序列打分（--dataset 模式）
+  $RUN_DIR/goal2_offline/duplicate_pairs_offline.jsonl  离线候选对（--dataset 模式）
+  $CHECKPOINT_ROOT/goal2_stitched/calibration.json   服务读取的拼接配置
+  $CHECKPOINT_ROOT/goal2_duplicate/calibration.json  服务读取的重复配置
+
+  $COMPETITION_WORKSPACE/answer/<evaluation_id>/duplicate_pairs.jsonl    重复影像对（每行一对）
+  $COMPETITION_WORKSPACE/answer/<evaluation_id>/<检查号>/prediction.json 含 IsStitchedProb
+  $COMPETITION_WORKSPACE/logs/inference.jsonl        推理日志（按 request_id/evaluation_id 查）
+  $COMPETITION_WORKSPACE/logs/serve.log              服务标准输出（含 goal2 配置行）
+
+--------------------------------------------------------------------------------
+9. 常见报错处置
+--------------------------------------------------------------------------------
+
+  契约测试报 “DummyStitchedTask is not Goal2StitchedTask”
+      -> tasks/real_pipeline.py 是旧版接线表（被 goal1 覆盖）。按第 2.2 节更新接线表，
+         再跑第 2.1 节四条；症状与修法详见 tasks/goal2_stitched/APPLY_NOTES.md
+
+  服务起来了但 IsStitchedProb 恒为 0、duplicate_pairs.jsonl 只有占位行
+      -> 同上：绑到了 Dummy。跑第 2.1-c 看任务链名字即可确认
+
+  标定结果没生效（阈值和 calibration.json 不一致）
+      -> 之前 export 过 GOAL2_STITCHED_THRESHOLD / GOAL2_DUPLICATE_SIM_CENTER，
+         环境变量优先；unset 这两个变量后重启服务
+
+  positives: 0 / gold_pairs: 0
+      -> 不是“目录不存在”，而是“成功读入并打分的影像数 = 0”：
+         ls "$DATA_ROOT/annotation/Composition" | head
+         ls "$DATA_ROOT/annotation/duplicate" | head
+         目录名或层级不同就用 --annotation-root 指定
+
+  首次 /call 很久才开始出结果
+      -> 重复检测第一次会先扫全库建索引（每个体数据只读中间 3 层）。
+         加 TASK2 侧加速：export GOAL2_DUPLICATE_SCAN_WORKERS=8
+         想跳过全库扫描：export GOAL2_DUPLICATE_SCAN=0（改成增量比对，召回会下降）
+
+  扫描太慢 / 想先跑通链路
+      -> export GOAL2_DUPLICATE_SCAN_MAX_VOLUMES=500 临时限流，正式评测务必改回 0
+
+  下游字段（goal3/4/5）变成中性值
+      -> 命中拼接/重复被闸门拦下了。查看 diagnosis：
+         python -c "import json;d=json.load(open('<answer>/<检查号>/prediction.json'));print(d)"
+         不想上闸：export GOAL2_GATED_FIELDS=
+
+  内存/耗时担心
+      -> 描述子约 0.5 KB（粗）+ 12 KB（精，float16）/卷；单对精排约 2 ms；
+         全库扫描是主要成本，用 GOAL2_DUPLICATE_SCAN_WORKERS 并行读盘
+
+--------------------------------------------------------------------------------
+10. 口径速查（评审对齐）
+--------------------------------------------------------------------------------
+
+  拼接：检查级 Partial AUC-PR（Recall≥ 某门限）。分数 = 各序列、各层「当前层 vs
+        上下层均值」的最大无量纲差异；阈值必须用 annotation/Composition 标定。
+  重复：图像对级 AUC-PR / Recall@10%FPR / Precision@15%Recall。正类 = 金标准对，
+        未提交的对按 PairProb=0 计；每例最多 Top-200，按置信度降序。
+        赛方定义是「原图轻微调整的复制影像」，因此用近似重复检索而不是逐像素哈希。
+  闸门：赛方按金标准筛临床诊断对象，模型预测不参与筛选；误判上闸会让下游字段变中性，
+        在意临床分就把 GOAL2_GATED_FIELDS 置空。
+
+================================================================================
+（本文件随 tasks/goal2_stitched/ 一起交付；与 tasks/goal2_duplicate/README.md 配合使用）
+================================================================================
