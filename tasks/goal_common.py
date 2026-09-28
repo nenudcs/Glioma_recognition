@@ -51,7 +51,12 @@ class _TorchTask:
     def _input(self, context: PipelineContext) -> torch.Tensor:
         arrays = []
         for modality in INPUT_MODALITIES:
-            series = _select_series(context.study.series, (modality,))
+            series = _find_series(context.study.series, (modality,))
+            if series is None:
+                # Training uses the same fixed four-channel contract and zero
+                # fills an absent modality. Keep inference identical.
+                arrays.append(np.zeros(self.input_shape, dtype=np.float32))
+                continue
             values = np.asarray(series.image, dtype=np.float32)
             finite = np.isfinite(values)
             if not finite.any():
@@ -60,10 +65,10 @@ class _TorchTask:
                 values = np.nan_to_num(values, copy=True)
                 lo, hi = np.percentile(values[finite], (1.0, 99.0))
                 values = np.clip((values - lo) / max(float(hi - lo), 1e-6), 0.0, 1.0)
-            arrays.append(np.asarray(values, dtype=np.float32))
+            resized = resize_volume(values, self.input_shape, is_mask=False)
+            arrays.append(np.asarray(resized, dtype=np.float32))
         tensor = torch.from_numpy(np.stack(arrays, axis=0).astype(np.float32, copy=False)).unsqueeze(0)
-        # One shared, shape-safe resize path for MedicalNet/diagnostic heads.
-        return resize_volume(tensor, self.input_shape, is_mask=False).to(self.device)
+        return tensor.to(self.device)
 
 
 def _goal4_result(outputs: dict[str, torch.Tensor]) -> Goal4Result:
@@ -101,14 +106,21 @@ def _goal4_result(outputs: dict[str, torch.Tensor]) -> Goal4Result:
 
 
 def _select_series(series: tuple[Series, ...], hints: tuple[str, ...]) -> Series:
+    selected = _find_series(series, hints)
+    if selected is not None:
+        return selected
+    if not series:
+        raise MissingSeriesError("study has no image series")
+    return series[0]
+
+
+def _find_series(series: tuple[Series, ...], hints: tuple[str, ...]) -> Series | None:
     for hint in hints:
         for item in series:
             text = " ".join((item.modality or "", str(item.metadata.get("SeriesDescription", "")), item.series_uid)).lower()
             if hint in text:
                 return item
-    if not series:
-        raise MissingSeriesError("study has no image series")
-    return series[0]
+    return None
 
 
 def _restore_mask(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
