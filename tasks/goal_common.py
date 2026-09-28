@@ -11,6 +11,7 @@ from core.exceptions import MissingSeriesError
 from data.structures import Series
 from pipeline.context import PipelineContext
 from tasks.results import BinaryResult, CategoricalResult, Goal4Result
+from training.resize import resize_volume
 
 
 LOCATION_LABELS = (
@@ -60,8 +61,9 @@ class _TorchTask:
                 lo, hi = np.percentile(values[finite], (1.0, 99.0))
                 values = np.clip((values - lo) / max(float(hi - lo), 1e-6), 0.0, 1.0)
             arrays.append(np.asarray(values, dtype=np.float32))
-        tensor = torch.from_numpy(np.stack(arrays, axis=0).astype(np.float32, copy=False)).unsqueeze(0).to(self.device)
-        return F.interpolate(tensor, size=self.input_shape, mode="trilinear", align_corners=False)
+        tensor = torch.from_numpy(np.stack(arrays, axis=0).astype(np.float32, copy=False)).unsqueeze(0)
+        # One shared, shape-safe resize path for MedicalNet/diagnostic heads.
+        return resize_volume(tensor, self.input_shape, is_mask=False).to(self.device)
 
 
 def _goal4_result(outputs: dict[str, torch.Tensor]) -> Goal4Result:

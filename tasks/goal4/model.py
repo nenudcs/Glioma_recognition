@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+import os
+
+from training.models.medicalnet import MedicalNet3DEncoder
 
 
 class Goal4Model(nn.Module):
@@ -23,8 +26,31 @@ class Goal4Model(nn.Module):
         "signal_flair": 3,
     }
 
-    def __init__(self, in_channels: int = 4) -> None:
+    def __init__(
+        self,
+        in_channels: int = 4,
+        *,
+        backend: str | None = None,
+        checkpoint: str | None = None,
+    ) -> None:
         super().__init__()
+        selected = (backend or os.environ.get("GOAL4_BACKEND", "tiny")).lower()
+        if selected == "medicalnet":
+            self.backend = "medicalnet"
+            self.encoder = MedicalNet3DEncoder(
+                depth=int(os.environ.get("GOAL4_MEDICALNET_DEPTH", "50")),
+                in_channels=in_channels,
+                checkpoint=checkpoint or os.environ.get("GOAL4_CHECKPOINT"),
+                strict=os.environ.get("GOAL4_STRICT_CHECKPOINT", "0").lower() in {"1", "true", "yes"},
+            )
+            feature_dim = self.encoder.feature_dim
+            self.heads = nn.ModuleDict(
+                {name: nn.Linear(feature_dim, size) for name, size in self.HEAD_SIZES.items()}
+            )
+            return
+        if selected != "tiny":
+            raise ValueError(f"unsupported Goal4 backend: {selected!r}; use tiny or medicalnet")
+        self.backend = "tiny"
         self.features = nn.Sequential(
             nn.Conv3d(in_channels, 8, 3, padding=1),
             nn.InstanceNorm3d(8),
@@ -39,5 +65,8 @@ class Goal4Model(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        features = self.features(x).mean(dim=(2, 3, 4))
+        if self.backend == "medicalnet":
+            features = self.encoder(x)
+        else:
+            features = self.features(x).mean(dim=(2, 3, 4))
         return {name: head(features) for name, head in self.heads.items()}
