@@ -1,5 +1,6 @@
 """Official Goal 3 competition Task."""
 
+import os
 import torch
 
 from pipeline.context import PipelineContext
@@ -13,13 +14,16 @@ class Goal3Task(_TorchTask, StudyTask[Goal3Result]):
     name = "goal3"
 
     def load_model(self) -> None:
-        self._finish_load(Goal3Model())
+        self._finish_load(Goal3Model(in_channels=int(os.environ.get("GOAL3_IN_CHANNELS", "1"))))
 
     def predict(self, context: PipelineContext) -> Goal3Result:
         if self.model is None:
             raise RuntimeError("Goal3 model has not been loaded")
+        scores = []
         with torch.inference_mode():
-            probability = torch.sigmoid(self.model(self._input(context))).item()
+            for series in context.study.series:
+                scores.append(torch.sigmoid(self.model(self._input_single(series))).item())
+        probability = max(scores) if scores else 0.0
         return Goal3Result(tumor_probability=float(probability))
 
 

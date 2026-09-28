@@ -70,6 +70,18 @@ class _TorchTask:
         tensor = torch.from_numpy(np.stack(arrays, axis=0).astype(np.float32, copy=False)).unsqueeze(0)
         return tensor.to(self.device)
 
+    def _input_single(self, series: Series) -> torch.Tensor:
+        values = np.asarray(series.image, dtype=np.float32)
+        finite = np.isfinite(values)
+        if not finite.any():
+            values = np.zeros(values.shape, dtype=np.float32)
+        else:
+            values = np.nan_to_num(values, copy=True)
+            lo, hi = np.percentile(values[finite], (1.0, 99.0))
+            values = np.clip((values - lo) / max(float(hi - lo), 1e-6), 0.0, 1.0)
+        values = resize_volume(values, self.input_shape, is_mask=False)
+        return torch.from_numpy(np.asarray(values, dtype=np.float32))[None, None].to(self.device)
+
 
 def _goal4_result(outputs: dict[str, torch.Tensor]) -> Goal4Result:
     def categorical(name: str, labels: tuple[str, ...]) -> CategoricalResult:

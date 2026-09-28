@@ -12,7 +12,7 @@ class Goal3Model(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 4,
+        in_channels: int = 1,
         *,
         backend: str | None = None,
         checkpoint: str | None = None,
