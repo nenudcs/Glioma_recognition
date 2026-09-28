@@ -1,5 +1,0 @@
--r requirements.txt
-# MedicalNet is installed from the checked-out MedicalNet source tree so its
-# models.resnet module is available on PYTHONPATH. No network download occurs
-# at service startup.
-# nnunetv2>=2.5

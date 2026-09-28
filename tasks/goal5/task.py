@@ -11,7 +11,7 @@ from tasks.base import StudyTask
 from tasks.goal5.model import Goal5Model
 from tasks.results import Goal5Result
 from tasks.goal_common import _TorchTask, _restore_mask, _select_series
-from training.models.nnunet import NNUNetPredictorAdapter
+from inference_backends.nnunet import NNUNetPredictorAdapter
 
 
 class Goal5Task(_TorchTask, StudyTask[Goal5Result]):

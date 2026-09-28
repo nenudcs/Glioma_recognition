@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import os
 
-from training.models.medicalnet import MedicalNet3DEncoder
+from inference_backends.medicalnet import MedicalNet3DEncoder
 
 
 class Goal4Model(nn.Module):

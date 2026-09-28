@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import os
 
-from training.models.medicalnet import MedicalNet3DClassifier
+from inference_backends.medicalnet import MedicalNet3DClassifier
 
 
 class Goal3Model(nn.Module):

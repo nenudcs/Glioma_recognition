@@ -11,7 +11,7 @@ from core.exceptions import MissingSeriesError
 from data.structures import Series
 from pipeline.context import PipelineContext
 from tasks.results import BinaryResult, CategoricalResult, Goal4Result
-from training.resize import resize_volume
+from core.resize import resize_volume
 
 
 LOCATION_LABELS = (

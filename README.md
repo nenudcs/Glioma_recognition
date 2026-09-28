@@ -153,78 +153,9 @@ PASS Callback
 
 ## 接入真实模型
 
-### 训练数据、mask 和真实后端
+训练、Excel 索引、mask 选择和 MedicalNet/nnUNet 数据导出在 `jwj83/Tumor-segment` 仓库维护；本仓库只接收训练好的 checkpoint 并进行比赛推理和本地测试。
 
-训练索引以 `SeriesType.xlsx` 的 `(AccessionNumber, SeriesUid)` 为全集。先在
-`/2026aicompetition/datasets` 下运行：
-
-```bash
-python scripts/read_training_annotations.py \
-  --series-type /2026aicompetition/datasets/training/annotation/SeriesType.xlsx \
-  --annotation /2026aicompetition/datasets/training/annotation/脑胶质瘤标注结果-训练集.xlsx \
-  --out-dir ./readout
-python scripts/scan_training_files.py \
-  --index ./readout/sample_index.csv \
-  --data-root /2026aicompetition/datasets/training/annotation \
-  --out-dir ./file_check
-python scripts/summarize_label_overlap.py \
-  --index ./readout/sample_index.csv \
-  --out-dir ./label_overlap
-python scripts/summarize_study_modalities.py \
-  --index ./file_check/file_index.csv \
-  --out ./study_modalities.json
-```
-
-`file_check/file_index.csv` 只记录路径，不把 NIfTI 像素全部读入内存。正式分类训练按
-检查聚合四个固定通道；缺失模态通道用零填充，并在样本中保留
-`modality_present`。`study_modalities.json` 用于先确认真实的模态组合分布。
-`training.dataset.BrainNiftiDataset` 在 `__getitem__` 中懒加载一个序列；分割任务
-按 `--mask-name t2_auto` 使用“水肿 → 全肿瘤 → 瘤体”，按 `--mask-name
-t1ce_auto` 使用“肿瘤瘤体 → 瘤体 → 全肿瘤”。
-
-训练 MedicalNet 的最小入口为：
-
-```bash
-python -m training.train_medicalnet \
-  --file-index ./file_check/file_index.csv \
-  --labels-csv ./readout/series_merged.csv \
-  --label-column check__glioma_with_label__std \
-  --in-channels 1 --epochs 1 \
-  --output ./checkpoint/goal3_medicalnet.pt
-```
-
-训练后的比赛服务可以通过 `tasks.real_medical_pipeline:build_pipeline` 接入。Goal3/4
-的 `medicalnet` 后端和 Goal5 的 `nnunet` 后端都是可选的，默认仍保留 dummy/小模型，
-避免没有外部权重时服务启动就失败：
-
-分割训练使用 nnUNet v2 的标准数据集转换、规划和训练命令；本仓库的
-`training.dataset.BrainNiftiDataset` 用于快速检查/抽样读取，最终 nnUNet 训练仍需要
-按 nnUNet 的 `imagesTr`、`labelsTr` 命名规范导出。mask 文件选择规则与训练前检查一致，
-不要把没有 mask 的 646 条样本混入分割训练。
-
-可直接导出一个 nnUNet 数据集（默认使用 `t2_auto` mask）：
-
-```bash
-python scripts/export_nnunet_dataset.py \
-  --index ./file_check/file_index.csv \
-  --labels-csv ./readout/series_merged.csv \
-  --out-dir ./nnunet_dataset \
-  --target abnormal --link
-nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity
-nnUNetv2_train 501 3d_fullres 0 --npz
-```
-
-```bash
-export COMPETITION_PIPELINE_FACTORY=tasks.real_medical_pipeline:build_pipeline
-export GOAL3_BACKEND=medicalnet
-export GOAL3_CHECKPOINT=/2026aicompetition/workspace/checkpoint/goal3_medicalnet.pt
-export GOAL4_BACKEND=medicalnet
-export GOAL4_CHECKPOINT=/2026aicompetition/workspace/checkpoint/goal4_medicalnet.pt
-export GOAL5_BACKEND=nnunet
-export GOAL5_NNUNET_MODEL_FOLDER=/2026aicompetition/workspace/checkpoint/nnunet
-```
-
-MedicalNet 源码和 nnUNet 权重必须提前放入镜像或挂载目录，服务启动时不会联网下载。
+推理后端通过 `tasks.real_medical_pipeline:build_pipeline` 接入，MedicalNet/nnUNet 依赖和权重必须提前放入镜像或挂载目录，服务启动时不会联网下载。
 
 ### 1. 实现 Task
 
