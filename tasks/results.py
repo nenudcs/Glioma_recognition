@@ -1,4 +1,3 @@
-# 任务结果模型：定义各赛题预测、分割掩码和重复病例的数据结构。
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,3 +69,4 @@ class DuplicatePair:
 @dataclass(frozen=True)
 class DuplicateResult:
     pairs: tuple[DuplicatePair, ...]
+

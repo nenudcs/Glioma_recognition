@@ -1,4 +1,3 @@
-# 输出写入器：生成暂存预测文件、分割掩码和重复病例结果并原子发布。
 from __future__ import annotations
 
 import json
@@ -136,12 +135,19 @@ class OutputWriter:
             planned[path] = (mask, series)
 
         for path, (mask, series) in planned.items():
-            path.parent.mkdir()
-            image = nib.Nifti1Image(
-                np.asarray(mask, dtype=np.uint8),
-                np.asarray(series.affine, dtype=np.float64),
-            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            affine = np.asarray(series.affine, dtype=np.float64)
+            image = nib.Nifti1Image(np.asarray(mask, dtype=np.uint8), affine)
             image.set_data_dtype(np.uint8)
+            # 显式固定几何，避免读回时的浮点差异导致校验失败：
+            #  · sform 与 qform 写成同一 affine 且 code=1，保证 Validator 重读时
+            #    走 sform（不再由 qform 四元数重建，那会引入 ~1e-5 量级误差）；
+            #  · 清掉缩放字段，防止 0/1 掩码被 scl_slope/scl_inter 变换后
+            #    读出非 {0,1}（规范规定掩码体素必须严格 0/1，否则该例分割记 0 分）。
+            image.header.set_sform(affine, code=1)
+            image.header.set_qform(affine, code=1)
+            image.header["scl_slope"] = 1.0
+            image.header["scl_inter"] = 0.0
             nib.save(image, str(path))
 
     @staticmethod

@@ -1,4 +1,3 @@
-# FastAPI 服务入口：校验评测请求并异步调度推理任务。
 from __future__ import annotations
 
 import threading
@@ -28,8 +27,13 @@ class JobManager:
 
     def submit(self, job: EvaluationJob) -> bool:
         with self._lock:
+            # 规范 §13.1/§25 要求"重复 request_id"返回 HTTP 409。
+            # 原实现是 return False，但调用方并未检查返回值 → 仍回 accepted，
+            # 平台会以为请求被受理（§26 已把这列为与目标架构的差距）。
             if job.request_id in self._request_states:
-                return False
+                raise InvalidRequestError(
+                    f"request {job.request_id!r} already submitted"
+                )
             if job.evaluation_id in self._active_evaluations:
                 raise InvalidRequestError(
                     f"evaluation {job.evaluation_id!r} is already running"

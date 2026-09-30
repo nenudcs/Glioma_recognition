@@ -1,4 +1,3 @@
-# 结构化日志模块：以线程安全方式追加写入竞赛推理 JSONL 日志。
 from __future__ import annotations
 
 import json
@@ -42,3 +41,4 @@ class CompetitionLogger:
             handle.write(line + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+

@@ -1,4 +1,3 @@
-# 输出校验器：检查预测 JSON、分割掩码、重复病例及目录布局。
 from __future__ import annotations
 
 import json
@@ -127,8 +126,15 @@ class OutputValidator:
             self._fail(
                 f"mask shape mismatch for {path}: {array.shape} != {source.image.shape}"
             )
-        if not np.allclose(image.affine, source.affine, rtol=0.0, atol=1e-5):
-            self._fail(f"mask affine mismatch for {path}")
+        # affine 容差取 1e-4（而非 1e-5）：
+        #  · NIfTI 的 sform 以 **float32** 存储，坐标量级 ~200mm 时 float32 的
+        #    ulp 约 1.5e-5，已大于 1e-5 —— 那是实现精度问题，不是数据不一致；
+        #  · 用 1e-5 会把几何完全正确的正常病例判为不合法，进而让**整个
+        #    evaluation 失败**（代价远大于容差放宽带来的风险）。
+        # shape 仍然要求**精确相等**（不受浮点影响），足以拦住真正错位的掩码。
+        if not np.allclose(image.affine, source.affine, rtol=0.0, atol=1e-4):
+            delta = float(np.abs(np.asarray(image.affine) - np.asarray(source.affine)).max())
+            self._fail(f"mask affine mismatch for {path}: max|delta|={delta:.3g} (>1e-4)")
         if not np.isfinite(array).all():
             self._fail(f"mask contains non-finite values: {path}")
         values = set(np.unique(array).tolist())

@@ -1,4 +1,3 @@
-# 系统配置模块：从环境变量构建评测路径、回调和并发设置。
 from __future__ import annotations
 
 import os
@@ -16,6 +15,14 @@ class Settings:
     callback_timeout_seconds: float = 10.0
     callback_attempts: int = 3
     max_workers: int = 1
+    # 规范 §5.2：权重根目录 {workspace}/checkpoint。
+    # 追加在**末尾并带默认值**——插在中间会破坏既有位置参数构造。
+    checkpoint_root: Path | None = None
+
+    @property
+    def ckpt_root(self) -> Path:
+        """checkpoint 根目录（未显式设置时按规范从 workspace 推导）。"""
+        return self.checkpoint_root or (self.workspace / "checkpoint")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,6 +39,11 @@ class Settings:
             ),
             log_root=Path(
                 os.environ.get("COMPETITION_LOG_ROOT", workspace / "logs")
+            ),
+            checkpoint_root=(
+                Path(os.environ["COMPETITION_CHECKPOINT_ROOT"])
+                if os.environ.get("COMPETITION_CHECKPOINT_ROOT")
+                else None
             ),
             callback_url=os.environ.get("COMPETITION_CALLBACK_URL") or None,
             pipeline_factory=os.environ.get("COMPETITION_PIPELINE_FACTORY") or None,

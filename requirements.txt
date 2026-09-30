@@ -1,7 +1,20 @@
+# 提交工程运行依赖。
+#
+# ⚠️ torch 声明保留（官方 goal1/goal2 依赖）：平台基础镜像
+#    pytorch:*-cuda*-runtime 自带 CUDA 版时 pip 会跳过安装；
+#    非 CUDA 基础镜像上会拉 CPU 版（慢几十倍），所以正式评测容器
+#    必须用带 CUDA 的基础镜像（Dockerfile 里有构建期断言）。
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
+pydantic>=2.5,<3
 numpy>=1.26,<3
+scipy>=1.10
+pyyaml>=6.0
 nibabel>=5.2,<6
 openpyxl>=3.1,<4
 torch>=2.2,<3
 timm>=1.0,<2
+
+# ---- Goal3/4/5（本队实现）推理链路额外依赖 ----
+pandas>=2.0                # 读序列表 SeriesType.xlsx：data/series_selector.py
+xlrd>=2.0                  # 读 .xls（Excel 97-2003）；表是 .xls 格式时 openpyxl 读不了

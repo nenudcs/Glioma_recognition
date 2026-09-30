@@ -1,4 +1,3 @@
-# 流水线上下文：保存单个检查及各赛题的中间和最终结果。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
