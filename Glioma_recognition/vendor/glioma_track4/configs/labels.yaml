@@ -1,0 +1,24 @@
+# 结构化字段定义（严格对齐规范 prediction.json 的 Prediction 段）
+# 每个字段：name（输出键名）→ classes（类别顺序即模型输出顺序）
+# 若训练数据缺少该字段金标准，训练时该字段自动跳过（label_mask=0），推理时用规则/默认值兜底。
+fields:
+  - {key: TumorProbability, type: binary, classes: [No, Yes]}          # 胶质瘤存在性（ROC-AUC 评估）
+  - {key: Location, type: single, classes: [Brainstem, RightParietal, RightFrontal,
+      RightBasalGanglia, RightTemporal, RightCerebellum, RightOccipital,
+      LeftParietal, LeftFrontal, LeftBasalGanglia, LeftTemporal,
+      LeftCerebellum, LeftOccipital, Other, NA]}
+  # output_classes：【最安全】对外枚举严格对齐规范示例（仅 Regular/Irregular）；
+  # 模型头仍保留 NA 兜底类 → 已训练权重无需重训，只在输出层裁剪并重新归一。
+  - {key: Morphology, type: single, classes: [Regular, Irregular, NA], output_classes: [Regular, Irregular]}
+  - {key: WHO_Grade, type: single, classes: ["1", "2", "3", "4"]}
+  - {key: Enhancement, type: binary, classes: [No, Yes]}
+  - {key: EnhancementPattern, type: single, classes: [None, Ring, RimEnhancing,
+      Nodular, GroundGlass, Gyriform, Multifocal, Other]}
+  - {key: Necrosis, type: binary, classes: [No, Yes]}
+  - {key: CysticChange, type: binary, classes: [No, Yes]}
+  - {key: Hemorrhage, type: binary, classes: [No, Yes]}
+  - {key: Calcification, type: binary, classes: [No, Yes]}
+  - {key: Margin, type: binary, classes: [Unclear, Clear]}             # 边界是否清晰
+  - {key: Lobulation, type: binary, classes: [No, Yes]}
+  - {key: Signal_T2WI, type: single, classes: [Low, Iso, High]}
+  - {key: Signal_FLAIR, type: single, classes: [Low, Iso, High]}

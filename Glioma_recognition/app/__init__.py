@@ -1,0 +1,2 @@
+"""Competition HTTP adapter."""
+

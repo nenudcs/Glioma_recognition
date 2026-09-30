@@ -1,0 +1,57 @@
+amp_dtype: bfloat16
+augment:
+  elastic_prob: 0.0
+  enabled: true
+  flip_prob: 0.5
+  scale_prob: 0.0
+aux:
+  neg_per_pos: 2
+  pair_batch: 2
+  special_batch: 2
+batch_size: 1
+checkpoint_metric: val_dice_peri
+ema_decay: 0.9
+epochs: 2
+folds: 2
+global_view:
+  every: 1
+  out: 32
+  size_mm: 64
+grad_clip: 12.0
+loss:
+  boundary: 0.0
+  ce: 1.0
+  cls: 1.0
+  cls_pos_weight: 2.0
+  contain: 0.2
+  deep_sup: 0.4
+  dice: 1.0
+  embed: 0.3
+  embed_scale: 10.0
+  seg_pos_weight: 1.0
+  special: 1.0
+lr: 0.001
+model:
+  aniso_z: false
+  arch: mednext
+  base: 8
+  blocks_per_stage: 1
+  depth: 3
+  dropout: 0.0
+  expand: 2
+  k: 3
+num_workers: 0
+patch_size:
+- 32
+- 32
+- 16
+sampler:
+  pos_ratio: 0.8
+seed: 0
+threshold_grid:
+- 0.3
+- 0.5
+- 0.7
+val_every: 1
+val_ratio: 0.34
+weight_decay: 0.0

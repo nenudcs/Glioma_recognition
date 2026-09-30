@@ -1,0 +1,2 @@
+"""Competition-safe structured logging."""
+

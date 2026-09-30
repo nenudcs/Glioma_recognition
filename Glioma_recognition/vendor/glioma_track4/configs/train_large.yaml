@@ -1,0 +1,84 @@
+# 训练配置（赛道4）
+seed: 42
+epochs: 100
+batch_size: 2
+patch_size: [96, 96, 96]        # 训练 patch；显存不足降到 80³ 或 batch 1
+lr: 3.0e-4
+weight_decay: 3.0e-5
+amp_dtype: bfloat16             # 平台镜像 CUDA12.8 支持 bf16
+ema_decay: 0.999
+grad_clip: 12.0
+num_workers: 4
+val_every: 1
+folds: 5                        # 多折交叉验证（平台 4 容器上限 → 4 折并行 + 第 5 折后补）
+val_ratio: 0.2
+threshold_grid: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+                 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
+checkpoint_metric: val_dice_peri   # 选模指标（val_dice_mean 亦可）
+
+# ---- 骨干（MedNeXt 风格：深度可分离大核 + GRN；arch=resunet 可回退轻量版）----
+model:
+  arch: mednext
+  base: 32
+  depth: 5                      # 5 级下采样（通道 32→64→128→256→320）
+  blocks_per_stage: 2
+  k: 3                          # 深度可分离卷积核（3 或 5）
+  expand: 2
+  dropout: 0.0
+  aniso_z: false
+  max_ch: 320                   # 通道上限（配合 depth=5 得到 320 通道瓶颈）
+  plain_stages: 2               # **最深 2 级用普通 3×3×3 卷积**：参数 1.3M→23M，算力仅 +36%
+  dec_blocks: 1
+
+sampler:
+  pos_ratio: 0.7                # 每个 batch 中含病灶 patch 的比例
+
+# ---- 数据增广（小样本泛化的主要来源，这类脑肿瘤分割任务通常 +2~4 Dice）----
+augment:
+  enabled: true
+  flip_prob: 0.5                # 三轴随机翻转
+  rot_xy_prob: 0.7              # 90° 平面旋转（x-y 或 y-z）
+  scale_prob: 0.25              # 随机缩放（几何）
+  scale_range: 0.12
+  elastic_prob: 0.25            # 弹性形变
+  elastic_alpha: 2.0
+  elastic_sigma: 8.0
+  intensity_prob: 0.8           # gamma / 尺度 / 位移
+  gamma_range: 0.25
+  scale_range_i: 0.15
+  shift_range: 0.15
+  bias_prob: 0.2                # 模拟偏置场
+  bias_strength: 0.25
+  noise_prob: 0.3               # 高斯噪声
+  noise_std: 0.08
+
+# ---- 全局视图（分类 / 特殊影像 / 重复影像嵌入）----
+# 训练与推理必须使用**相同的物理尺寸与边长**，否则尺度分布不一致会让结构头退化
+global_view:
+  size_mm: 192                  # 物理立方体边长（覆盖全脑）
+  out: 96                       # 缩放到 96³（与 preprocess.inference.global_size 一致）
+  every: 4                      # 每 N 步做一次全局头前向（控制训练开销）
+
+# ---- 辅助任务（目标一/二，属于基础考核项，必须真正训练）----
+aux:
+  special_batch: 2              # 每步特殊影像（假人体/拼接）样本数
+  pair_batch: 2                 # 每步重复影像配对数
+  neg_per_pos: 3                # 配对负样本比例
+
+# ---- 多任务损失权重 ----
+loss:
+  dice: 1.0
+  ce: 1.0
+  deep_sup: 0.4                 # 深监督（多尺度）
+  cls: 1.0                      # 结构化字段（仅在有金标准的样本上回传）
+  special: 1.0                  # 目标一二：假人体 / 拼接
+  embed: 0.3                    # 目标一二：重复影像嵌入
+  contain: 0.2                  # 集合约束：core ⊆ peri
+  boundary: 0.0                 # 边界加权（>0 时启用，改善 NSD/HD95）
+  seg_pos_weight: 1.0           # 分割正类权重（病灶极小时可调大）
+  cls_pos_weight: 2.0           # 分类正类权重（类别不平衡）
+  embed_scale: 10.0             # 余弦相似度 logit 缩放
+
+infer:
+  use_ema: true                 # 推理默认用 EMA 权重（更稳）
+  ensemble: true                # 多折集成

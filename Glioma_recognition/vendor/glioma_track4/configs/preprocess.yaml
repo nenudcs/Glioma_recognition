@@ -1,0 +1,48 @@
+# 预处理与推理配置
+geometry:
+  common_spacing: [1.0, 1.0, 1.0]   # 公共网格：1mm 各向同性（各序列在此对齐后再训练/推理）
+  max_spacing_factor: 1.5           # 某轴原始 spacing 超过该倍数则保留原始（避免层厚过大的假层）
+  crop_brain: true                  # 推理时按脑部包围盒裁 ROI（显著提速、减少背景干扰）
+  brain_margin_vox: 4
+  resample_order_img: 1             # 线性
+  resample_order_mask: 0            # 最近邻（掩码必须保持二值）
+
+intensity:
+  method: zscore_per_volume         # MRI 标准：按体积 z-score（非 CT 的固定窗）
+  clip_percentile: [0.5, 99.5]      # 去极值
+  foreground_only: true             # 只用非零体素估计均值/方差（避免背景主导）
+
+# 输入通道：按序拼成多通道体数据；某序列缺失时按 fallback 取替代，并在日志中记录
+channels:
+  - {name: t1c,   fallback: [t1, t2]}
+  - {name: flair, fallback: [t2]}
+  - {name: t2,    fallback: []}
+  - {name: t1,    fallback: []}
+
+# 掩码角色 → 目标通道（规范：任务A=T1增强核心区；任务B=FLAIR/T2 总异常区）
+# 实际角色判定在 src/data/labels.mask_role_for：**按掩码所在序列的模态**归位
+mask_roles:
+  core: [肿瘤瘤体, 瘤体, tumor_core, core, enhancing, et, 增强]           # → 输出通道 core
+  peri: [全肿瘤, 水肿, 瘤体, whole_tumor, edema, flair_abn, 异常信号]     # → 输出通道 peri
+  abn:  [异常信号, abnormality]                                          # 非肿瘤性病变（检测负样本）
+
+inference:
+  patch: [96, 96, 96]               # 推理 patch：**必须与训练一致**（不一致会显著掉点）
+  overlap: 0.4                      # 滑窗重叠（0.4 在精度与耗时间性价比最高）
+  tta_flips: [x, y]                 # 全局头 TTA 轴（便宜，可多开）
+  seg_tta_flips: [x, y]             # 分割 TTA 轴（耗时主体，2 轴 = 4 组合）
+  tta_batch: 2                      # TTA 组合批处理（提速；显存不足设 1）
+  global_size: 96                   # 整脑视图边长（**必须与训练 global_view.out 一致**）
+  mask_threshold: 0.5               # 无 checkpoint 阈值时的兜底
+  min_tumor_voxels: 30              # 小于该体素数视为无病灶
+  keep_components: 3                # 每通道最多保留的连通域数（多灶病例不应被误删）
+  bridge_mm: 10.0                   # 邻近连通域的合并距离
+  duplicate_topk: 200               # 规范：每例最多提交 200 个候选对
+  duplicate_per_study: 50           # 每例**实际提交**数量（AUC-PR 对长尾敏感，少而准更优）
+  fp_weight: 0.5                    # 重复影像：手工指纹在融合相似度中的权重
+  prefetch_workers: 2               # I/O 预取线程数（DICOM→NIfTI、重采样与 GPU 推理重叠）
+
+# 特殊影像（目标一/二）：模型头未训练时的可解释启发式兜底阈值
+special:
+  fake_body_min_brain_ratio: 0.05   # 脑组织占比过低 → 疑似假人体
+  stitch_edge_ratio: 0.35           # 层间/边缘不连续比例 → 疑似拼接

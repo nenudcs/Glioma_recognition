@@ -1,0 +1,45 @@
+# 路径配置（平台路径可用环境变量覆盖，便于云桌面/容器/本地三处运行）
+#
+# 平台约定（《训推平台使用指南》）：
+#   /2026aicompetition/workspace        私有存储（answer/ train_model/ common/）
+#   /2026aicompetition/public_*         只读挂载（公共数据集/模型）
+workspace: /2026aicompetition/workspace
+
+raw:
+  # 比赛训练集根目录（平台实测：`/2026aicompetition/datasets/training` 下只有 `annotation/`，
+  #   影像与 SeriesType.xlsx 都在 `training/annotation/`；填上一层会**自动下钻并告警**，
+  #   所以这两层填哪个都能跑通，见 README.md §2.2「数据布局」）
+  # 可用环境变量覆盖：export DATASET_ROOT=/your/path
+  track4: /2026aicompetition/datasets/training
+  # 官方验证集根目录（**当前留空**）：填了即启用"外部验证集"评估分支 ——
+  #   最终指标以官方验证集为准（全折集成，不做留一）；留空则走折内 val（OOF）。
+  #   验证集实测布局 `verification/original/`（影像/标注表/SeriesType.xlsx 同层），
+  #   数据根填 `…/verification` 或 `…/verification/original` 都能扫通。
+  # 可用环境变量覆盖：export VAL_ROOT=/your/path/verification
+  #
+  # ⚠️ 2026-09-28 实测：官方验证集 **777 例、带掩膜的 0 例** —— 于是：
+  #   · `03_train.sh full`（全量模式）**用不了**：它必须用验证集掩膜算 Dice 选 best，会直接报错；
+  #   · `16_finalize.sh` 的 external 分支**也不能用**：算不出 Dice，而且会在**无掩膜**的集上
+  #     标定阈值再写回权重，把推理阈值带偏。
+  #   ⇒ 当前方案改用 **训练集 8:2 固定折内划分**（`CONFIG=train20 bash scripts/03_train.sh 0`），
+  #     所以本行留空。将来官方验证集补上掩膜后：填回路径 → `bash scripts/01_probe.sh --val`。
+  #
+  # ⚠️ 关键：**是否走 external 只看 `data/manifest_val.json` 这个文件在不在**
+  #   （`src/utils/config.external_val_manifest()` 只判文件存在），本行留空**挡不住**它。
+  #   已经生成过就必须移走：`mv data/manifest_val.json data/manifest_val.json.bak`
+  val: ""
+
+uif_root: data/uif              # 统一中间格式（原图 + 掩码 + 标签）
+manifest: data/manifest.json    # 扫描清单（病例/序列/掩码/结构化）
+manifest_val: data/manifest_val.json   # 官方验证集清单（bash scripts/01_probe.sh --val 生成；
+                                #   不存在=不启用外部验证集分支，见 raw.val 说明）
+folds: data/folds.json          # 多折划分
+preprocessed_root: data/preprocessed
+# 1mm 公共网格 + 整脑视图缓存（scripts/13_build_cache.py）。
+# 放平台**私有存储**：容器删除后不丢（重建缓存很贵）；export CACHE_DIR=... 可覆盖。
+preprocess_cache: /2026aicompetition/workspace/cache
+logs_dir: logs                  # 平台环境自动切换为 {workspace}/logs（规范要求）
+checkpoints_dir: checkpoints
+runs_dir: runs
+stats_file: data/dataset_stats.json
+answer_root: /2026aicompetition/workspace/answer   # 推理结果（{evaluation_id}/）

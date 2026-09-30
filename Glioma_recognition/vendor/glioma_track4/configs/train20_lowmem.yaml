@@ -1,0 +1,99 @@
+# 20 epoch · **低内存**训练配置（容器 RAM 紧张 / 曾 OOM 时用这份）
+# ----------------------------------------------------------------------------
+# 与 configs/train20.yaml 的**唯一差异**：
+#   batch_size: 2 → 1     （在飞样本减半：每个样本 patch 14 MB + 整脑视图 14 MB）
+#   num_workers: 4 → 1    （每个 DataLoader worker 各持一份「整脑视图 LRU」，
+#                          4 workers 时约 1.8 GB，降到 1 后约 0.45 GB —— 这是配置层里
+#                          最有效的一项；见 ROUTE_A_TRAIN_README.md §16）
+#
+# 刻意**不改** patch_size：`preprocess.yaml → inference.patch` 是 96³，
+# 训练 patch 必须与推理一致（不一致会显著掉点）。显存真不够时再单独降。
+#
+# 用法（与 train20 完全一样，tag 仍是 g4_fold0，所以会**续训**而不是从零）：
+#
+#   export DATASET_ROOT=/2026aicompetition/datasets/training/annotation
+#   export CACHE_DIR=/2026aicompetition/workspace/cache
+#   CONFIG=train20_lowmem nohup bash scripts/03_train.sh 0 > logs/fold0_lowmem.log 2>&1 &
+#
+# 前提：`data/folds.json` 已存在（固定 8:2）、预处理缓存**完整**
+#       （否则会退回全量载入，内存又要多几个 GB）。
+# ----------------------------------------------------------------------------
+seed: 42
+epochs: 20
+batch_size: 1                   # ★ 低内存：2 → 1
+patch_size: [96, 96, 96]        # 与推理一致，刻意不动
+lr: 3.0e-4
+weight_decay: 3.0e-5
+amp_dtype: bfloat16             # 平台镜像 CUDA12.8 支持 bf16
+ema_decay: 0.999
+grad_clip: 12.0
+num_workers: 1                  # ★ 低内存：4 → 1
+val_every: 1
+folds: 5                        # 决定 8:2（每折 val ≈ 1/5）；本方案只用 fold0
+val_ratio: 0.2
+threshold_grid: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+                 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
+checkpoint_metric: val_dice_peri
+
+# ---- 骨干（保持不变）----
+model:
+  arch: mednext
+  base: 32
+  depth: 4
+  blocks_per_stage: 2
+  k: 3
+  expand: 2
+  dropout: 0.0
+  aniso_z: false
+
+sampler:
+  pos_ratio: 0.7
+
+# ---- 数据增广（保持不变）----
+augment:
+  enabled: true
+  flip_prob: 0.5
+  rot_xy_prob: 0.7
+  scale_prob: 0.25
+  scale_range: 0.12
+  elastic_prob: 0.25
+  elastic_alpha: 2.0
+  elastic_sigma: 8.0
+  intensity_prob: 0.8
+  gamma_range: 0.25
+  scale_range_i: 0.15
+  shift_range: 0.15
+  bias_prob: 0.2
+  bias_strength: 0.25
+  noise_prob: 0.3
+  noise_std: 0.08
+
+# ---- 全局视图（**不要动**：改它会让缓存里的 whole.npy 尺寸不匹配）----
+global_view:
+  size_mm: 192
+  out: 96
+  every: 4                      # 想再省显存/时间可调到 8（会把目标①②④ 学得更慢）
+
+# ---- 辅助任务（保存不变，**不要设 0**：会让目标①②失去监督）----
+aux:
+  special_batch: 2
+  pair_batch: 2
+  neg_per_pos: 3
+
+# ---- 多任务损失权重（保持不变）----
+loss:
+  dice: 1.0
+  ce: 1.0
+  deep_sup: 0.4
+  cls: 1.0
+  special: 1.0
+  embed: 0.3
+  contain: 0.2
+  boundary: 0.0
+  seg_pos_weight: 1.0
+  cls_pos_weight: 2.0
+  embed_scale: 10.0
+
+infer:
+  use_ema: true
+  ensemble: true

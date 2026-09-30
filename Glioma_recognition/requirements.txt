@@ -1,0 +1,25 @@
+# 提交工程（Glioma_recognition-main）自身运行所需的依赖。
+#
+# ⚠️ 不在这里声明 torch：它必须来自**基础镜像**（平台基础镜像
+#    pytorch:*-cuda*-runtime 自带 CUDA 版）。若写进来，在非 CUDA 基础镜像上
+#    会拉一份 CPU 版 torch（2GB+）覆盖掉 CUDA 版 —— 服务起得来但推理慢几十倍。
+#    Dockerfile 里有构建期断言（import torch）做 fail-fast 检查。
+#
+# ⚠️ 本仓**自包含**：算法实现内置在 `vendor/glioma_track4/`
+#    （见 `vendor/README.md`），`tasks/glioma/pipeline.py` 用它构建真实插件。
+#    因此下面这些原本"属于算法工程"的依赖（SimpleITK / pandas / requests /
+#    xlrd）现在也是**本仓运行必需**，不再是可选项。
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+pydantic>=2.5,<3
+numpy>=1.26,<3
+scipy>=1.10
+pyyaml>=6.0
+nibabel>=5.2,<6
+openpyxl>=3.1,<4
+
+# ---- 以下来自内置算法实现（vendor/glioma_track4/），推理链路会用到 ----
+SimpleITK>=2.3             # 重采样 / 几何（世界坐标桥接）：src/data/{dicom,dataset}.py
+pandas>=2.0                # 读序列表 SeriesType.xlsx：src/data/labels.py
+requests>=2.31             # 结果回调：src/serving/app.py
+xlrd>=2.0                  # 读 .xls（Excel 97-2003）；表是 .xls 格式时 openpyxl 读不了
