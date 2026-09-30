@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -15,20 +16,14 @@ from pipeline.context import PipelineContext
 from tasks.base import StudyTask
 from tasks.goal5.model import Goal5Model
 from tasks.results import Goal5Result
-from tasks.goal_common import _TorchTask, _restore_mask, _select_series
+from tasks.goal_common import _TorchTask, _restore_mask, _select_series, canonical_modality, series_modality
 
 
 def _find(series, names):
     for name in names:
-        key = "".join(ch for ch in name.lower() if ch.isalnum())
+        key = canonical_modality(name)
         for item in series:
-            text = " ".join((item.modality or "", str(item.metadata.get("SeriesDescription", "")), item.series_uid)).lower()
-            compact = "".join(ch for ch in text if ch.isalnum())
-            if key == "t1" and ("t1ce" in compact or "t1c" in compact or "enh" in compact):
-                continue
-            if key == "t2" and "flair" in compact:
-                continue
-            if key in compact:
+            if key is not None and series_modality(item) == key:
                 return item
     return None
 
@@ -37,8 +32,26 @@ def _as_reference(series):
     return nib.Nifti1Image(np.asarray(series.image, dtype=np.float32), np.asarray(series.affine, dtype=np.float64))
 
 
+def _default_model_folder(dataset_name: str) -> Path | None:
+    root = Path(
+        os.environ.get("COMPETITION_WORKSPACE", "/2026aicompetition/workspace")
+    ) / "giloma_nnunet_results"
+    candidates = sorted(root.glob(f"{dataset_name}/**/fold_0"))
+    for fold in candidates:
+        if (fold / "checkpoint_best.pth").is_file():
+            return fold.parent
+    return None
+
+
+def _ensure_nnunet_on_path() -> None:
+    root = Path("/2026aicompetition/workspace/model-nnunet/nnUNet-master")
+    if root.is_dir() and str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+
 class _NNUNetRunner:
-    def __init__(self, model_folder: str, device: str) -> None:
+    def __init__(self, model_folder: str, device: str, checkpoint_name: str) -> None:
+        _ensure_nnunet_on_path()
         try:
             from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
         except ImportError as exc:
@@ -47,7 +60,11 @@ class _NNUNetRunner:
         self.predictor = nnUNetPredictor(tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
                                          perform_everything_on_device=True, device=device_obj,
                                          verbose=False, verbose_preprocessing=False, allow_tqdm=False)
-        self.predictor.initialize_from_trained_model_folder(model_folder, use_folds=(0,), checkpoint_name="checkpoint_final.pth")
+        self.predictor.initialize_from_trained_model_folder(
+            model_folder,
+            use_folds=(0,),
+            checkpoint_name=checkpoint_name,
+        )
 
     def predict(self, images: list[nib.Nifti1Image]) -> np.ndarray:
         with tempfile.TemporaryDirectory(prefix="goal5_nnunet_") as tmp:
@@ -58,23 +75,37 @@ class _NNUNetRunner:
             self.predictor.predict_from_files([paths], [str(output)], overwrite=True,
                                               num_processes_preprocessing=1,
                                               num_processes_segmentation_export=1)
+            # A list of output paths is a list of filename prefixes in
+            # nnUNet's API, not directories.
             result = root / "prediction.nii.gz"
-            if not result.is_file(): raise RuntimeError(f"nnUNet did not write {result}")
-            return (np.asarray(nib.load(str(result)).dataobj) > 0).astype(np.uint8)
+            if not result.is_file():
+                raise RuntimeError(f"nnUNet did not write {result}")
+            prediction = nib.load(str(result))
+            reference = images[0]
+            if prediction.shape != reference.shape or not np.allclose(
+                prediction.affine, reference.affine, rtol=0.0, atol=1e-5
+            ):
+                raise RuntimeError("nnUNet prediction geometry differs from its reference image")
+            return (np.asarray(prediction.dataobj) > 0).astype(np.uint8)
+
 
 
 class Goal5Task(_TorchTask, StudyTask[Goal5Result]):
     name = "goal5"
 
     def load_model(self) -> None:
-        backend = os.environ.get("GOAL5_BACKEND", "tiny").lower()
+        backend = os.environ.get("GOAL5_BACKEND", "nnunet").lower()
         if backend == "nnunet":
-            core = os.environ.get("GOAL5_CORE_NNUNET_MODEL_FOLDER")
-            abnormal = os.environ.get("GOAL5_ABNORMAL_NNUNET_MODEL_FOLDER")
+            core = os.environ.get("GOAL5_CORE_NNUNET_MODEL_FOLDER") or _default_model_folder("Dataset601_GliomaCore")
+            abnormal = os.environ.get("GOAL5_ABNORMAL_NNUNET_MODEL_FOLDER") or _default_model_folder("Dataset602_GliomaAbnormal")
             if not core or not abnormal:
-                raise RuntimeError("set GOAL5_CORE_NNUNET_MODEL_FOLDER and GOAL5_ABNORMAL_NNUNET_MODEL_FOLDER")
+                raise RuntimeError(
+                    "Goal5 model folders not found under "
+                    "$COMPETITION_WORKSPACE/giloma_nnunet_results; set the two GOAL5_*_MODEL_FOLDER variables"
+                )
             device = os.environ.get("GOAL5_DEVICE", "auto")
-            self.backend = "nnunet"; self.core_runner = _NNUNetRunner(core, device); self.abnormal_runner = _NNUNetRunner(abnormal, device); self.model = None; return
+            checkpoint_name = os.environ.get("GOAL5_CHECKPOINT_NAME", "checkpoint_best.pth")
+            self.backend = "nnunet"; self.core_runner = _NNUNetRunner(str(core), device, checkpoint_name); self.abnormal_runner = _NNUNetRunner(str(abnormal), device, checkpoint_name); self.model = None; return
         if backend != "tiny": raise ValueError(f"unsupported Goal5 backend: {backend!r}")
         self.backend = "tiny"; self.core_runner = None; self.abnormal_runner = None; self._finish_load(Goal5Model())
 

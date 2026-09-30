@@ -8,15 +8,20 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from core.resize import resize_volume
+from tasks.goal_common import resize_volume
 from pipeline.context import PipelineContext
 from tasks.base import StudyTask
 from tasks.goal4.model import Goal4Model
-from tasks.goal_common import _goal4_result, _TorchTask
+from tasks.goal_common import _goal4_result, _TorchTask, series_modality, load_checkpoint
 from tasks.results import Goal4Result
 
 
 MODALITIES = ("t1", "t1ce", "t2", "flair")
+
+
+def _default_checkpoint() -> Path:
+    workspace = Path(os.environ.get("COMPETITION_WORKSPACE", "/2026aicompetition/workspace"))
+    return workspace / "Tumor-segment-training/checkpoint/goal4_medicalnet_930_fixed/best.pt"
 
 
 def _shape(name: str) -> tuple[int, int, int]:
@@ -26,12 +31,7 @@ def _shape(name: str) -> tuple[int, int, int]:
 
 
 def _modality(series) -> str | None:
-    text = " ".join((series.modality or "", str(series.metadata.get("SeriesDescription", "")), series.series_uid)).lower(); compact = "".join(ch for ch in text if ch.isalnum())
-    if "flair" in compact or "t2flair" in compact: return "flair"
-    if "t1ce" in compact or "t1c" in compact or "enhanced" in compact or "enh" in compact: return "t1ce"
-    if "t2" in compact: return "t2"
-    if "t1" in compact: return "t1"
-    return None
+    return series_modality(series)
 
 
 def _normalize_resize(series, shape):
@@ -46,12 +46,14 @@ class Goal4Task(_TorchTask, StudyTask[Goal4Result]):
 
     def load_model(self) -> None:
         self.input_shape = _shape("GOAL4_INPUT_SHAPE")
-        model = Goal4Model(in_channels=4, backend=os.environ.get("GOAL4_BACKEND", "tiny"))
-        checkpoint = os.environ.get("GOAL4_CHECKPOINT")
+        in_channels = int(os.environ.get("GOAL4_IN_CHANNELS", str(len(MODALITIES))))
+        if in_channels != len(MODALITIES):
+            raise ValueError("GOAL4_IN_CHANNELS must be 4 for the trained four-channel checkpoint")
+        backend = os.environ.get("GOAL4_BACKEND", "medicalnet")
+        model = Goal4Model(in_channels=in_channels, backend=backend)
+        checkpoint = os.environ.get("GOAL4_CHECKPOINT", str(_default_checkpoint()))
         if checkpoint:
-            payload = torch.load(Path(checkpoint), map_location="cpu"); state = payload.get("model", payload) if isinstance(payload, dict) else payload
-            missing, unexpected = model.load_state_dict(state, strict=False)
-            if missing or unexpected: raise RuntimeError(f"Goal4 checkpoint mismatch: missing={list(missing)[:5]}, unexpected={list(unexpected)[:5]}")
+            load_checkpoint(model, checkpoint, device=torch.device("cpu"))
         model.to(self.device); model.eval(); self.model = model
 
     def _input(self, context: PipelineContext) -> torch.Tensor:
