@@ -1,6 +1,7 @@
 """真实插件注册入口（规范 §5.1 / §8.1 / §15.1）。
 
-当前已接入 Goal1、Goal2、Goal3、Goal4、Goal5。执行顺序按规范 §8.1 推荐顺序：
+当前已接入 **Goal1 authenticity** 与 **Goal2（拼接 + 重复）**，其余目标继续使用 Dummy
+（替换策略：一次只替换一个插件，替换后跑完整回归）。执行顺序按规范 §8.1 推荐顺序：
 Goal1 → Goal2 stitched → Goal3 → Goal5 → Goal4。
 
 用法（不改管线代码，只用环境变量注入）::
@@ -21,9 +22,11 @@ Goal1 → Goal2 stitched → Goal3 → Goal5 → Goal4。
 from __future__ import annotations
 
 from pipeline.inference import InferencePipeline, StudyTaskBinding
-import numpy as np
-
-from tasks.dummy.study_tasks import DummyGoal4Task
+from tasks.dummy.study_tasks import (
+    DummyGoal3Task,
+    DummyGoal4Task,
+    DummyGoal5Task,
+)
 from tasks.goal1_authenticity.config import Goal1Config
 from tasks.goal1_authenticity.task import Goal1AuthenticityTask
 from tasks.goal2_duplicate.config import Goal2DuplicateConfig
@@ -32,34 +35,6 @@ from tasks.goal2_duplicate.task import Goal2DuplicateRecorder
 from tasks.goal2_stitched.config import Goal2StitchedConfig
 from tasks.goal2_stitched.gating import GatedStudyTask, gated_fields
 from tasks.goal2_stitched.task import Goal2StitchedTask
-from tasks.goal3.task import Goal3Task
-from tasks.goal4.task import Goal4Task
-from tasks.goal5.task import Goal5Task
-from tasks.results import Goal3Result, Goal5Result
-
-
-def _neutral_goal3(_context) -> Goal3Result:
-    """Neutral value used when Goal2's gate skips Goal3."""
-    return Goal3Result(tumor_probability=0.5)
-
-
-def _neutral_goal4(context):
-    """Reuse the format-defined Goal4 neutral result without running a model."""
-    return DummyGoal4Task().predict(context)
-
-
-def _neutral_goal5(context) -> Goal5Result:
-    """Emit binary zero masks in the exact source-series geometries."""
-    from tasks.goal_common import _select_series
-
-    core = _select_series(context.study.series, ("t1ce", "t1+c", "t1 enhanced", "t1"))
-    flair = _select_series(context.study.series, ("flair", "t2flair", "t2"))
-    return Goal5Result(
-        core_mask=np.zeros(core.image.shape, dtype=np.uint8),
-        core_source_series_uid=core.series_uid,
-        flair_mask=np.zeros(flair.image.shape, dtype=np.uint8),
-        flair_source_series_uid=flair.series_uid,
-    )
 
 
 def build_pipeline(
@@ -69,14 +44,14 @@ def build_pipeline(
     *,
     gated_fields_override: tuple[str, ...] | None = None,
 ) -> InferencePipeline:
-    """Build the complete runtime pipeline from trained model adapters."""
+    """规范顺序的完整管线：真实 Goal1/Goal2 + 其余 Dummy 占位。"""
     duplicate = duplicate_config or Goal2DuplicateConfig.from_env()
     fields = gated_fields() if gated_fields_override is None else tuple(gated_fields_override)
     probe = DuplicateProbe(duplicate) if duplicate.enabled else None
 
-    goal3 = Goal3Task()
-    goal4 = Goal4Task()
-    goal5 = Goal5Task()
+    goal3 = DummyGoal3Task()
+    goal4 = DummyGoal4Task()
+    goal5 = DummyGoal5Task()
     return InferencePipeline(
         study_tasks=(
             StudyTaskBinding("goal1", Goal1AuthenticityTask(goal1_config)),
@@ -86,15 +61,15 @@ def build_pipeline(
             ),
             StudyTaskBinding(
                 "goal3",
-                GatedStudyTask(goal3, "goal3", _neutral_goal3, gated_fields=fields),
+                GatedStudyTask(goal3, "goal3", goal3.predict, gated_fields=fields),
             ),
             StudyTaskBinding(
                 "goal5",
-                GatedStudyTask(goal5, "goal5", _neutral_goal5, gated_fields=fields),
+                GatedStudyTask(goal5, "goal5", goal5.predict, gated_fields=fields),
             ),
             StudyTaskBinding(
                 "goal4",
-                GatedStudyTask(goal4, "goal4", _neutral_goal4, gated_fields=fields),
+                GatedStudyTask(goal4, "goal4", goal4.predict, gated_fields=fields),
             ),
         ),
         duplicate_task=Goal2DuplicateRecorder(duplicate, probe=probe),
